@@ -247,6 +247,39 @@ describe("registerFileRoutes", () => {
     }
   });
 
+  it("refuses to bootstrap a timeline over one the composition already registers", async () => {
+    const projectDir = mkdtempSync(join(tmpdir(), "hf-hijack-"));
+    try {
+      // No inline GSAP block to extract, but the composition registers its root
+      // timeline from an external builder. Bootstrapping would replace it with an
+      // empty paused timeline and the preview would render blank.
+      writeFileSync(
+        join(projectDir, "index.html"),
+        '<div id="box"></div><script src="./build.js"></script>' +
+          '<script>window.__hf = {}; window.__timelines["root"] = buildTimeline();</script>',
+      );
+      const app = new Hono();
+      registerFileRoutes(app, createAdapter(projectDir));
+
+      const response = await app.request(
+        "http://localhost/projects/demo/gsap-mutations/index.html",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "add", targetSelector: "#box", vars: { x: 10 } }),
+        },
+      );
+      const payload = (await response.json()) as { error?: string };
+
+      expect(response.status).toBe(409);
+      expect(payload.error).toContain("already registers its own root timeline");
+      const after = readFileSync(join(projectDir, "index.html"), "utf-8");
+      expect(after).not.toContain("gsap.timeline({ paused: true })");
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
+  });
+
   it("returns empty content for missing files when caller marks the read optional", async () => {
     const projectDir = createProjectDir();
     const app = new Hono();

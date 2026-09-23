@@ -1203,6 +1203,14 @@ function containsRawGsapExpression(value: unknown): boolean {
   return Object.values(value).some(containsRawGsapExpression);
 }
 
+// A composition may build its root timeline in an external script or an async builder, so
+// `extractGsapScriptBlock` finds nothing even though a timeline is registered. Bootstrapping
+// one anyway overwrites `window.__timelines[id]` with an empty paused timeline: the scenes are
+// then attached to it, never revealed, and the preview renders blank.
+function registersTimeline(html: string): boolean {
+  return /window\.__timelines\s*\[/.test(html);
+}
+
 async function prepareGsapMutationScript(
   c: RouteContext,
   res: ResolvedGsapFile,
@@ -1218,7 +1226,12 @@ async function prepareGsapMutationScript(
   const beforeHtml = readFileSync(res.absPath, "utf-8");
   let html = beforeHtml;
   let block = extractGsapScriptBlock(html);
-  if (!block && (firstMutation.type === "add" || firstMutation.type === "add-with-keyframes")) {
+  const bootstrapWouldHijack = !block && registersTimeline(html);
+  if (
+    !block &&
+    !bootstrapWouldHijack &&
+    (firstMutation.type === "add" || firstMutation.type === "add-with-keyframes")
+  ) {
     const compId = html.match(/data-composition-id="([^"]+)"/)?.[1] ?? "main";
     const { GSAP_CDN } = await import("@hyperframes/core");
     const bootstrap = [
@@ -1251,6 +1264,15 @@ async function prepareGsapMutationScript(
       path: res.filePath,
       backupPath: null,
     });
+  }
+  if (!block && bootstrapWouldHijack) {
+    return c.json(
+      {
+        error:
+          "composition already registers its own root timeline; a bootstrapped timeline would replace it",
+      },
+      409,
+    );
   }
   if (!block) return c.json({ error: "no GSAP script found in file" }, 400);
   return { html, beforeHtml, block };
