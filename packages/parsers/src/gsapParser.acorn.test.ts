@@ -109,6 +109,20 @@ window.__timelines['scene'] = tl;
     expect(result.postamble).toContain("scene");
   });
 
+  it("preserves the registration of a timeline that has no tween calls yet", () => {
+    const script = `
+window.__timelines = window.__timelines || {};
+const tl = gsap.timeline({ paused: true });
+window.__timelines['root'] = tl;
+`.trim();
+    const result = parseGsapScriptAcorn(script);
+    expect(result.animations).toHaveLength(0);
+    expect(result.preamble).toContain("gsap.timeline");
+    // Without this the registration is dropped on the first mutation, and the
+    // next mutation rewrites the tweens above their own `const tl`.
+    expect(result.postamble).toContain("window.__timelines['root'] = tl;");
+  });
+
   it("extracts correct animation from script with custom JS around tweens", () => {
     const script = `
 var tl = gsap.timeline({ paused: true });

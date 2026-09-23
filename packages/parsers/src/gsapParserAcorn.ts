@@ -1947,15 +1947,23 @@ export function parseGsapScriptAcorn(script: string): ParsedGsap {
         ? `const ${timelineVar} = gsap.timeline({ paused: true });`
         : `${timelineVar} = gsap.timeline({ paused: true });`;
     const preamble = timelineMatch?.[0] ?? fallbackPreamble;
+    const preambleEnd = timelineMatch ? timelineMatch[0].length : -1;
 
     const lastCallIdx = script.lastIndexOf(`${timelineVar}.`);
     let postamble = "";
-    if (lastCallIdx !== -1) {
+    if (lastCallIdx > preambleEnd) {
       const afterLast = script.slice(lastCallIdx);
       const endOfCall = afterLast.indexOf(";");
       if (endOfCall !== -1) {
         postamble = script.slice(lastCallIdx + endOfCall + 1).trim();
       }
+    } else if (preambleEnd !== -1) {
+      // A freshly created timeline has no tween calls yet, so there is no
+      // `tl.` to anchor on. Everything after the declaration is still real
+      // code — typically the `window.__timelines[id] = tl` registration — and
+      // dropping it would unregister the timeline and, on the next mutation,
+      // leave the rewritten tweens sitting above their own declaration.
+      postamble = script.slice(preambleEnd).trim();
     }
 
     const result: ParsedGsap = { animations, timelineVar, preamble, postamble };
