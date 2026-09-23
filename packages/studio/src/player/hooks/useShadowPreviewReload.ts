@@ -19,6 +19,31 @@ import type { PlaybackAdapter } from "../lib/playbackTypes";
 // It only runs while the tab is visible: readiness is frame-driven, and a hidden tab renders none.
 export const SHADOW_READY_TIMEOUT_MS = 15_000;
 
+// That budget assumes the asset cap is the whole cost, which holds only while a composition
+// carries a handful of media elements. Every <video>/<audio> warms up before the first frame
+// can paint, so a media-heavy composition needs longer than any fixed budget covers: measured
+// on an 87s composition with 12 media elements, a reload reaches ready at ~12.9s and fails the
+// flat budget as soon as the machine is busy. Scale with the weight actually on screen, keep
+// the flat budget as the floor, and cap it so a genuinely stuck shadow still fails.
+const PER_MEDIA_BUDGET_MS = 1_000;
+const MAX_SHADOW_READY_TIMEOUT_MS = 60_000;
+
+export function shadowReadyTimeoutMs(mediaCount: number): number {
+  if (!Number.isFinite(mediaCount) || mediaCount <= 0) return SHADOW_READY_TIMEOUT_MS;
+  const scaled = SHADOW_READY_TIMEOUT_MS + Math.floor(mediaCount) * PER_MEDIA_BUDGET_MS;
+  return Math.min(scaled, MAX_SHADOW_READY_TIMEOUT_MS);
+}
+
+// A shadow is a reload of the composition already on screen, so the live iframe is the only
+// weight sample available before the new document exists.
+function liveMediaCount(iframe: HTMLIFrameElement | null): number {
+  try {
+    return iframe?.contentDocument?.querySelectorAll("video, audio").length ?? 0;
+  } catch {
+    return 0;
+  }
+}
+
 function isDocumentHidden(): boolean {
   return typeof document !== "undefined" && document.visibilityState === "hidden";
 }
@@ -159,10 +184,10 @@ export function useShadowPreviewReload({
       if (isDocumentHidden()) return;
       readyTimerRef.current = setTimeout(
         () => failShadow(gen, "it took too long to load"),
-        SHADOW_READY_TIMEOUT_MS,
+        shadowReadyTimeoutMs(liveMediaCount(iframeRef.current)),
       );
     },
-    [failShadow],
+    [failShadow, iframeRef],
   );
   const armReadyTimerRef = useRef(armReadyTimer);
   armReadyTimerRef.current = armReadyTimer;

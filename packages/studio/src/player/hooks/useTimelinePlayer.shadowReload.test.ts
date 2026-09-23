@@ -4,7 +4,7 @@
 import React, { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SHADOW_READY_TIMEOUT_MS } from "./useShadowPreviewReload";
+import { SHADOW_READY_TIMEOUT_MS, shadowReadyTimeoutMs } from "./useShadowPreviewReload";
 import { usePlayerStore } from "../store/playerStore";
 import { NLEProvider, useNLEContext, type NLEContextValue } from "../../components/nle/NLEContext";
 import {
@@ -508,3 +508,21 @@ function stubVisibility(initial: DocumentVisibilityState) {
     document.dispatchEvent(new Event("visibilitychange"));
   };
 }
+
+describe("shadow ready budget scales with media weight", () => {
+  it("keeps the flat budget as the floor when nothing has to warm up", () => {
+    expect(shadowReadyTimeoutMs(0)).toBe(SHADOW_READY_TIMEOUT_MS);
+    expect(shadowReadyTimeoutMs(-3)).toBe(SHADOW_READY_TIMEOUT_MS);
+    expect(shadowReadyTimeoutMs(Number.NaN)).toBe(SHADOW_READY_TIMEOUT_MS);
+  });
+
+  it("extends the budget for a media-heavy composition", () => {
+    // The 12-media composition that failed the flat budget at ~12.9s to ready.
+    expect(shadowReadyTimeoutMs(12)).toBe(27_000);
+    expect(shadowReadyTimeoutMs(1)).toBeGreaterThan(SHADOW_READY_TIMEOUT_MS);
+  });
+
+  it("caps the budget so a stuck shadow still fails", () => {
+    expect(shadowReadyTimeoutMs(10_000)).toBe(60_000);
+  });
+});
