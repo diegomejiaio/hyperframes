@@ -102,10 +102,6 @@ async function main() {
     join(mediaEngine, "resolve.mjs"),
     join(DIST, "skills", "media-use", "scripts", "resolve.mjs"),
   );
-  mkdirSync(join(DIST, "skills", "registry"), { recursive: true });
-  copyDirContents(join(DIST, "registry"), join(DIST, "skills", "registry"));
-  mkdirSync(join(DIST, "skills", "media-use", "registry"), { recursive: true });
-  copyDirContents(join(DIST, "registry"), join(DIST, "skills", "media-use", "registry"));
 
   const dockerfile = join(CLI_ROOT, "src", "docker", "Dockerfile.render");
   if (existsSync(dockerfile)) {
@@ -120,6 +116,11 @@ async function main() {
   const contrastAuditScript = join(CLI_ROOT, "src", "commands", "contrast-audit.browser.js");
   if (existsSync(contrastAuditScript)) {
     cpSync(contrastAuditScript, join(DIST, "commands", "contrast-audit.browser.js"));
+  }
+
+  const motionSignatureScript = join(CLI_ROOT, "src", "commands", "motion-signature.browser.js");
+  if (existsSync(motionSignatureScript)) {
+    cpSync(motionSignatureScript, join(DIST, "commands", "motion-signature.browser.js"));
   }
 
   const motionSampleScript = join(CLI_ROOT, "src", "commands", "motion-sample.browser.js");

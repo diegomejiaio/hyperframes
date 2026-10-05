@@ -3,7 +3,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   buildTimelineMeta,
-  resolveRenderClipContent,
   resolveResizingElementIds,
   shouldIgnoreTimelinePointerDown,
   type TimelineMetaBuilderInputs,
@@ -28,6 +27,7 @@ function inputs(overrides: Partial<TimelineMetaBuilderInputs> = {}): TimelineMet
       ref: vi.fn(),
       tabIndex: -1,
       labelMode: false,
+      contentOrigin: 80,
       zoomMode: "fit",
       onScroll: vi.fn(),
       onFocus: vi.fn(),
@@ -85,12 +85,6 @@ describe("buildTimelineMeta", () => {
 });
 
 describe("timeline provider branch helpers", () => {
-  it("resolves virtualized clip content", () => {
-    const render = () => null;
-    expect(resolveRenderClipContent(true, true, render)).toBeUndefined();
-    expect(resolveRenderClipContent(false, true, render)).toBe(render);
-  });
-
   it("resolves resizing element ids", () => {
     expect(resolveResizingElementIds(null)).toBeUndefined();
     expect(resolveResizingElementIds({ element: { id: "clip" } } as never)).toEqual(["clip"]);

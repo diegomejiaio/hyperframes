@@ -39,7 +39,46 @@ const BASE_FLAG = "--base";
 const STORYBOARD_VIEW_REASON =
   "owner-directed removal of the Studio storyboard view; its only readers were deleted with it";
 
+const SIMULATED_CURSOR_REASON =
+  "owner-directed removal of simulated-cursor; the Cursors section's new pointer animations replace it";
+
 export const ALLOWED_DELETIONS = new Map([
+  [
+    "packages/studio/src/hooks/gsapTargetCache.ts",
+    "its only caller was the deleted var-offset move writer; nothing imports isElementGsapTargeted",
+  ],
+  [
+    "packages/studio/src/player/components/automationGestureKeys.ts",
+    "automation-lane saves now persist once per gesture through the timeline save, so no caller needs a gesture undo key",
+  ],
+  [
+    "packages/studio/src/player/components/automationGestureKeys.test.ts",
+    "tests for the removed automation gesture undo keys",
+  ],
+  [
+    "packages/studio/src/utils/editHistory.ts",
+    "held only EditHistoryKind; recordEdit's kind was never sent to the project history, so it and every caller's copy go",
+  ],
+  [
+    "packages/studio/src/utils/editHistoryStorage.ts",
+    "Studio's undo moves onto the project history (studio-server); the browser IndexedDB history and its reducer are removed",
+  ],
+  [
+    "packages/studio/src/utils/editHistoryStorage.test.ts",
+    "tests for the removed IndexedDB history store",
+  ],
+  [
+    "packages/studio/src/utils/editHistory.test.ts",
+    "tests for the removed in-browser history reducer; merging and undo are tested in projectHistory.test.ts",
+  ],
+  [
+    "packages/studio/src/hooks/usePersistentEditHistory.projectOwnership.test.tsx",
+    "tests the removed per-project IndexedDB store; the hook now posts to the project's own history routes",
+  ],
+  [
+    "packages/studio/src/components/nle/TimelinePane.test.ts",
+    "its only subject, the expandedParentStart rebase wrappers, is dead code now removed",
+  ],
   [
     "scripts/test-reachability-baseline.json",
     "Reachability now requires zero orphans and rejects baseline files.",
@@ -1050,6 +1089,27 @@ export const ALLOWED_DELETIONS = new Map([
   [
     "registry/examples/vscode-theme-visualizer/scripts/build-theme-registry.mjs",
     "removed in the 2026-09 low-use catalog cut, see the PR",
+  ],
+  ["registry/components/simulated-cursor/demo.html", SIMULATED_CURSOR_REASON],
+  ["registry/components/simulated-cursor/registry-item.json", SIMULATED_CURSOR_REASON],
+  ["registry/components/simulated-cursor/simulated-cursor.html", SIMULATED_CURSOR_REASON],
+  [
+    "packages/studio-server/src/helpers/previewWatchIgnore.ts",
+    "preview.watchIgnore is replaced by reloading only when a file the preview loaded changes",
+  ],
+  [
+    "packages/studio-server/src/helpers/previewWatchIgnore.test.ts",
+    "tests for the removed preview.watchIgnore helper",
+  ],
+  ["docs/images/preview-reload-evidence/after.webm", "evidence video no page referenced"],
+  ["docs/images/preview-reload-evidence/before.webm", "evidence video no page referenced"],
+  [
+    "packages/studio-server/src/helpers/atomicFile.ts",
+    "moved to @hyperframes/core/atomic-file (packages/core/src/atomicFile.ts) as the single atomic writer for core, sdk, cli and studio-server",
+  ],
+  [
+    "packages/studio-server/src/helpers/atomicFile.test.ts",
+    "its tests moved with it to packages/core/src/atomicFile.test.ts",
   ],
 ]);
 

@@ -1,8 +1,10 @@
+import { sameInstant } from "@hyperframes/core/clip-facts";
 import { ensureHfIds } from "@hyperframes/parsers/hf-ids";
 import {
   findTargetElement,
   dedupeClonedCompositionId,
   isHTMLElement,
+  nextUniqueId,
   parseSourceDocument,
   type SourceMutationTarget,
 } from "./sourceMutation.js";
@@ -40,13 +42,6 @@ export function duplicateElementInHtml(
   return { html: ensureHfIds(html), matched: true, newId: uniqueId };
 }
 
-function nextUniqueId(document: Document, newId: string): string {
-  let uniqueId = newId;
-  let suffix = 2;
-  while (document.getElementById(uniqueId)) uniqueId = `${newId}-${suffix++}`;
-  return uniqueId;
-}
-
 function rippleElements(
   document: Document,
   element: Element,
@@ -59,9 +54,10 @@ function rippleElements(
       continue;
     }
     const start = numericAttribute(candidate, "data-start");
-    if (start !== null && start >= at) {
-      candidate.setAttribute("data-start", String(start + duration));
-    }
+    if (start === null) continue;
+    const metInsertionPoint = sameInstant(start, at);
+    if (start < at && !metInsertionPoint) continue;
+    candidate.setAttribute("data-start", String((metInsertionPoint ? at : start) + duration));
   }
 }
 

@@ -1,6 +1,14 @@
-import { existsSync } from "node:fs";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
 import { isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { decodeUrlPathVariants } from "./composition.js";
+
+/** The subset of `node:path` that `isWithinProjectRoot` needs to run under
+ * an injected platform (tests pass `path.win32` / `path.posix`). */
+interface PathModuleLike {
+  resolve: (...segments: string[]) => string;
+  relative: (from: string, to: string) => string;
+  isAbsolute: (path: string) => boolean;
+}
 
 /**
  * Shared local-asset resolution helpers for every package that maps
@@ -115,10 +123,22 @@ export function cleanAssetUrl(url: string): string {
   return url.trim().split(/[?#]/, 1)[0] ?? "";
 }
 
-export function isWithinProjectRoot(projectDir: string, candidate: string): boolean {
-  const projectRoot = resolve(projectDir);
-  const relativePath = relative(projectRoot, candidate);
-  return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
+/**
+ * `pathModule` defaults to the host's native `node:path`, so every existing
+ * caller gets its actual OS's separator and drive-letter rules unchanged.
+ * Tests inject `path.win32` / `path.posix` to exercise both platforms' rules
+ * from a single OS (same pattern as producer/fileServer.ts's `isPathInside`).
+ */
+export function isWithinProjectRoot(
+  projectDir: string,
+  candidate: string,
+  pathModule: PathModuleLike = { resolve, relative, isAbsolute },
+): boolean {
+  const projectRoot = pathModule.resolve(projectDir);
+  const relativePath = pathModule.relative(projectRoot, candidate);
+  return (
+    relativePath === "" || (!relativePath.startsWith("..") && !pathModule.isAbsolute(relativePath))
+  );
 }
 
 function addCandidate(candidates: string[], candidate: string): void {
@@ -221,4 +241,29 @@ export function maskNonScannableRanges(html: string): string {
   out = maskRange(out, /<style\b[^>]*>[\s\S]*?<\/style\b[^>]*>/gi);
   out = maskRange(out, /<script\b[^>]*>[\s\S]*?<\/script\b[^>]*>/gi);
   return out;
+}
+
+export type ProjectFileRead =
+  | { kind: "file"; text: string }
+  | { kind: "folder" }
+  | { kind: "missing" };
+
+/** Reads through one descriptor, so the file-type check and the read see the same file. */
+export function readProjectFile(path: string): ProjectFileRead {
+  let fd: number;
+  try {
+    // Non-blocking so a named pipe is reported, not waited on; the mode never applies (no O_CREAT).
+    fd = openSync(path, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0), 0o600);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code ?? "";
+    if (["EISDIR", "ENXIO"].includes(code)) return { kind: "folder" };
+    if (["ENOENT", "ENOTDIR", "ELOOP", "ENAMETOOLONG"].includes(code)) return { kind: "missing" };
+    throw error;
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return { kind: "folder" };
+    return { kind: "file", text: readFileSync(fd, "utf-8") };
+  } finally {
+    closeSync(fd);
+  }
 }

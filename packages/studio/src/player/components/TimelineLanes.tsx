@@ -1,4 +1,4 @@
-import { Fragment, useId, useMemo } from "react";
+import { Fragment, useId, useMemo, type CSSProperties } from "react";
 import { BeatStrip, BeatBackgroundLines } from "./BeatStrip";
 import { TimelineClip } from "./TimelineClip";
 import { TimelineCompactDiamonds } from "./TimelineCompactDiamonds";
@@ -17,7 +17,7 @@ import {
 } from "./useTimelineTrackLayout";
 import { trackDisplayNumber, trackDisplaySuffix } from "./timelineTrackDisplay";
 import { clipTimingStart } from "../../hooks/gsapShared";
-import { getTimelineEditCapabilities } from "./timelineEditing";
+import { useTimelineClipCapabilities } from "./timelineReadOnly";
 import { CLIP_Y, TRACK_H } from "./timelineLayout";
 import { usePlayerStore } from "../store/playerStore";
 import { isMultiDragPassenger, multiDragPassengerOffsetPx } from "./timelineMultiDragPreview";
@@ -32,8 +32,17 @@ import { queryTimelineClipIndex } from "../lib/timelineClipIndex";
 import { getTimelineElementIdentity } from "../lib/timelineElementHelpers";
 import { timelineClipFocusId } from "./timelineNavigationIdentity";
 import { useTimelineKeyboardActor } from "./useTimelineKeyboardActor";
-import { deriveTimelineTransitionSeams } from "./timelineTransitionSeams";
 import { TimelineTransitionOverlays } from "./TimelineTransitionOverlays";
+import { deriveTimelineTransitionSeamsByTrack } from "./timelineTransitionSeams";
+
+function passengerStyleAt(offsetPx: number): CSSProperties {
+  return {
+    transform: `translateX(${offsetPx}px)`,
+    opacity: 0.85,
+    zIndex: 20,
+    pointerEvents: "none",
+  };
+}
 
 export function TimelineLanes({
   pps,
@@ -41,6 +50,7 @@ export function TimelineLanes({
   contentGutter,
   trackContentWidth,
   theme,
+  showAudioEffects,
   displayTrackOrder,
   rowGeometry,
   virtualRows,
@@ -53,7 +63,6 @@ export function TimelineLanes({
   pinnedClipIdentities,
   trackOrder,
   tracks,
-  trackStyles,
   groups,
   laneCounts,
   selectedElementId,
@@ -76,7 +85,6 @@ export function TimelineLanes({
   setResizingClip,
   setDraggedClip,
   setSelectedElementId,
-  shiftClickClipRef,
   getPreviewElement,
   getTrackStyle,
   keyframeCache,
@@ -106,19 +114,18 @@ export function TimelineLanes({
   const { collapsedGroupIds, expandedLaneOwnerIds, toggleGroupExpanded, toggleLaneOwnerExpanded } =
     useTimelineGroupDisclosure();
   const automationLanes = useAutomationLanes();
-  const allTransitionElements = useMemo(
-    () => tracks.flatMap(([, elements]) => elements.map(getPreviewElement)),
+  const getClipCapabilities = useTimelineClipCapabilities();
+  const transitionSeamsByTrack = useMemo(
+    () =>
+      deriveTimelineTransitionSeamsByTrack(tracks.flatMap(([, els]) => els.map(getPreviewElement))),
     [getPreviewElement, tracks],
   );
   // A group's automation clock is COMPOSITION time (groups doc §1.3), so its
   // synthetic lane element spans the whole composition rather than a clip.
   const compositionDuration = usePlayerStore((s) => s.duration);
   useAutomationSelectionKeyboard({ lanes: automationLanes });
-  const { logicalRowsByTrack, groupByAnchor } = useTimelineLaneRowIndexes(logicalRows, groups);
-  const groupMemberTracks = useMemo(
-    () => new Set(groups.flatMap((group) => group.memberTracks)),
-    [groups],
-  );
+  const rowIndexes = useTimelineLaneRowIndexes(logicalRows, groups);
+  const { logicalRowsByTrack, groupByAnchor, groupMemberTracks } = rowIndexes;
   const {
     toggleRowExpanded: toggleRowExpandedTracked,
     toggleClipExpanded: toggleClipExpandedTracked,
@@ -133,9 +140,8 @@ export function TimelineLanes({
     focusedTargetId,
     rowGeometry,
     scrollRef,
-    onToggleRow: (row) => {
-      if (row.elementId) toggleClipExpandedTracked(row.elementId);
-    },
+    onToggleRow: (row) => row.elementId && toggleClipExpandedTracked(row.elementId),
+    onDrillDown,
   });
   return (
     <div
@@ -168,6 +174,7 @@ export function TimelineLanes({
                 virtualized={rowsVirtualized}
                 contentOrigin={contentOrigin}
                 theme={theme}
+                showAudioEffects={showAudioEffects}
                 rovingTargetId={keyboard.rovingTargetId}
                 collapsedGroupIds={collapsedGroupIds}
                 expandedLaneOwnerIds={expandedLaneOwnerIds}
@@ -198,9 +205,26 @@ export function TimelineLanes({
                 actorWindows,
               )
             : els;
-          const ts = trackStyles.get(trackNum) ?? getTrackStyle("");
           const isPendingTrack =
             draggedClip?.started === true && !trackOrder.includes(trackNum) && els.length === 0;
+          if (isPendingTrack)
+            return (
+              <div
+                key={rowKey}
+                data-timeline-new-track-lane={row}
+                aria-hidden="true"
+                className={rowsVirtualized ? "absolute" : "relative"}
+                style={{
+                  top: rowsVirtualized ? rowGeometry.getRowTop(row) : undefined,
+                  marginLeft: contentOrigin,
+                  width: trackContentWidth,
+                  height: TRACK_H,
+                  border: "1px dashed var(--timeline-accent)",
+                  background: "color-mix(in srgb, var(--timeline-accent) 5%, transparent)",
+                  pointerEvents: "none",
+                }}
+              />
+            );
           const rowBackground = theme.rowBackground;
           const beatStripOnTrack = trackShowsBeatStrip(els, beatAnalysis?.beatTimes, {
             selectedElementId,
@@ -224,9 +248,6 @@ export function TimelineLanes({
           // right only while it is collapsed and the row is nothing but bar.
           const clipBarHeight = rowExpanded ? TRACK_H - 2 * CLIP_Y : undefined;
           const automationElements = els.map(getPreviewElement);
-          const transitionSeams = deriveTimelineTransitionSeams(allTransitionElements).filter(
-            (seam) => seam.incoming.track === trackNum,
-          );
           // Minted here because this is the only place that sees BOTH ends of
           // the disclosure: the caret in the sticky header and the diamond lanes
           // on the canvas. Keyed by display row, not by `trackNum`, which is a
@@ -295,6 +316,7 @@ export function TimelineLanes({
                 isAudioTrack={isAudioTrack}
                 isGroupMember={groupMemberTracks.has(trackNum)}
                 theme={theme}
+                showAudioEffects={showAudioEffects}
                 onToggleClipExpanded={() => {
                   const keys = els.map(getTimelineElementIdentity);
                   if (keys.length > 0) toggleRowExpandedTracked(keys);
@@ -346,21 +368,6 @@ export function TimelineLanes({
                     renderTimeRange={rowsVirtualized ? renderTimeRange : undefined}
                   />
                 )}
-                {isPendingTrack && (
-                  <div
-                    className="absolute inset-0 flex items-center"
-                    style={{
-                      paddingLeft: 16,
-                      color: ts.label,
-                      fontSize: 11,
-                      letterSpacing: "0.06em",
-                      textTransform: "uppercase",
-                      opacity: 0.5,
-                    }}
-                  >
-                    New track
-                  </div>
-                )}
                 {
                   // fallow-ignore-next-line complexity
                   renderElements.map((el) => {
@@ -371,7 +378,7 @@ export function TimelineLanes({
                     // diamonds on their own bar instead.
                     const isTrackKeyframeClip = elementKey === keyframeClipKey;
                     const showsLanes = isTrackKeyframeClip && rowExpanded;
-                    const capabilities = getTimelineEditCapabilities(el);
+                    const capabilities = getClipCapabilities(el);
                     const isSelected =
                       selectedElementId === elementKey || selectedElementIds.has(elementKey);
                     const isComposition = !!el.compositionSrc;
@@ -392,9 +399,9 @@ export function TimelineLanes({
                     // the passenger's timeline data until the owning drag commits.
                     const isPassenger =
                       multiDragPreview != null && isMultiDragPassenger(clipKey, multiDragPreview);
-                    const passengerOffsetPx = isPassenger
-                      ? multiDragPassengerOffsetPx(clipKey, pps, multiDragPreview)
-                      : 0;
+                    const passengerStyle = isPassenger
+                      ? passengerStyleAt(multiDragPassengerOffsetPx(clipKey, pps, multiDragPreview))
+                      : undefined;
                     const clipGestures = createClipGestureHandlers(
                       el,
                       elementKey,
@@ -407,7 +414,6 @@ export function TimelineLanes({
                         onRazorSplit,
                         onRazorSplitAll,
                         blockedClipRef,
-                        shiftClickClipRef,
                         suppressClickRef,
                         scrollRef,
                         setShowPopover,
@@ -427,6 +433,7 @@ export function TimelineLanes({
                         }}
                         el={previewElement}
                         pps={pps}
+                        passengerStyle={passengerStyle}
                         clipY={CLIP_Y}
                         clipHeight={clipBarHeight}
                         isSelected={isSelected}
@@ -472,6 +479,7 @@ export function TimelineLanes({
                         beatsActive={beatStripOnTrack}
                         accentColor={clipStyle.accent}
                         isSelected={isSelected}
+                        passengerStyle={passengerStyle}
                         currentTime={currentTime}
                         selectedKeyframes={selectedKeyframes}
                         rovingTargetId={keyboard.rovingTargetId}
@@ -497,6 +505,7 @@ export function TimelineLanes({
                         clipDuration={previewElement.duration}
                         clipLeftPx={previewElement.start * pps}
                         clipWidthPx={Math.max(previewElement.duration * pps, 4)}
+                        passengerStyle={passengerStyle}
                         accentColor={clipStyle.accent}
                         isSelected={isSelected}
                         currentPercentage={
@@ -523,39 +532,21 @@ export function TimelineLanes({
                       />
                     );
 
-                    // Keep one keyed top-level child per element. Returning an
-                    // array here makes React reconcile the outer array by
-                    // position, so a window shift remounts otherwise stable
-                    // clip keys and can tear down focus mid-reveal.
-                    if (!isPassenger) {
-                      return (
-                        <Fragment key={clipKey}>
-                          {clip}
-                          {compactDiamonds}
-                          {propertyLanes}
-                        </Fragment>
-                      );
-                    }
+                    // No wrapper node per clip, and the same Fragment whether or not it rides a
+                    // drag, so joining or leaving one restyles it, never remounts it.
                     return (
-                      <div
-                        key={clipKey}
-                        className="absolute inset-0"
-                        style={{
-                          transform: `translateX(${passengerOffsetPx}px)`,
-                          opacity: 0.85,
-                          zIndex: 20,
-                          pointerEvents: "none",
-                        }}
-                      >
+                      <Fragment key={clipKey}>
                         {clip}
                         {compactDiamonds}
                         {propertyLanes}
-                      </div>
+                      </Fragment>
                     );
                   })
                 }
                 <TimelineTransitionOverlays
-                  seams={transitionSeams}
+                  seams={transitionSeamsByTrack.get(trackNum) ?? []}
+                  rowElements={draggedClip?.started ? [] : automationElements}
+                  rowBackground={rowBackground}
                   pixelsPerSecond={pps}
                   rowHeight={rowHeight}
                   clipBarHeight={clipBarHeight}

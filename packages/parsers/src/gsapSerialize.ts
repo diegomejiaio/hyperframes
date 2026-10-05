@@ -70,6 +70,7 @@ export interface GsapAnimation {
   hasUnresolvedKeyframes?: boolean;
   /** True when the tween's target selector couldn't be statically resolved (dynamic). */
   hasUnresolvedSelector?: boolean;
+  hasPartialSelector?: boolean;
   /** Absolute start time computed by walking the timeline chain (handles +=, -=, <, >, labels). */
   resolvedStart?: number;
   /** True when no position arg was authored — the tween is sequentially placed by GSAP. */
@@ -143,6 +144,7 @@ export interface GsapKeyframesData<K extends GsapPercentageKeyframe = GsapPercen
   keyframes: K[];
   ease?: string;
   easeEach?: string;
+  fromMotionPath?: true;
 }
 
 export interface ArcPathSegment {

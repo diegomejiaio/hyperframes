@@ -3,23 +3,20 @@ import { usePlayerStore } from "../player";
 import type { TimelineElement } from "../player";
 import type { DomEditSelection } from "../components/editor/domEditing";
 import { useDockLayoutStore } from "../components/dock/dockLayoutStore";
-import { isTypingTarget } from "../utils/typingTarget";
+import { isTypingTarget, ownsPlainKeys } from "../utils/typingTarget";
 import { isEditableTarget } from "../utils/timelineDiscovery";
 import { shouldIgnoreHistoryShortcut } from "../utils/studioHelpers";
 import { canSplitElement } from "../utils/timelineElementSplit";
 import { trackStudioEvent } from "../utils/studioTelemetry";
+import { STUDIO_PLAIN_KEYS } from "../player/components/studioShortcuts";
+import { openAudioGainDialog } from "../player/components/audioGainDialogStore";
+import type { LinkShortcutCallbacks } from "./linkShortcuts";
 
 // Extracted from useAppHotkeys.ts to keep it under the studio 600-line cap,
 // following useTimelineDeleteOps's precedent. Pure functions, no hooks — the
 // hook still owns the actual keydown listeners and calls into these.
 
-/** Exported so useAppHotkeys's own history-only preview listener can reuse
- *  the same undo/redo key arbitration without duplicating it. */
-export function handleUndoRedoKey(
-  event: KeyboardEvent,
-  onUndo: () => void,
-  onRedo: () => void,
-): boolean {
+function handleUndoRedoKey(event: KeyboardEvent, onUndo: () => void, onRedo: () => void): boolean {
   const key = event.key.toLowerCase();
   if (key === "z" && !event.shiftKey) {
     event.preventDefault();
@@ -34,7 +31,7 @@ export function handleUndoRedoKey(
   return false;
 }
 
-export interface HotkeyCallbacks {
+export interface HotkeyCallbacks extends LinkShortcutCallbacks {
   handleTimelineElementsDelete: (elements: TimelineElement[]) => Promise<void>;
   handleTimelineElementSplit: (element: TimelineElement, splitTime: number) => Promise<void>;
   handleDomEditElementDelete: (
@@ -158,7 +155,8 @@ export function dispatchModifierKey(
  *  Delete arbitration between keyframes, an automation range and the clip can
  *  be asserted without standing up the whole hook. */
 export function dispatchPlainKey(event: KeyboardEvent, key: string, cb: HotkeyCallbacks): void {
-  if (key === "f" && !event.shiftKey && !event.altKey) {
+  if (ownsPlainKeys(event.target)) return;
+  if (key === STUDIO_PLAIN_KEYS.fullscreen && !event.shiftKey && !event.altKey) {
     event.preventDefault();
     if (document.fullscreenElement) void document.exitFullscreen();
     else
@@ -166,7 +164,7 @@ export function dispatchPlainKey(event: KeyboardEvent, key: string, cb: HotkeyCa
     return;
   }
 
-  if (event.key === "s" && !event.altKey) {
+  if (event.key === STUDIO_PLAIN_KEYS.split && !event.altKey) {
     // Reserve bare `s` for Split even when the current selection cannot split,
     // so secondary listeners do not reinterpret the same key as Snap toggle.
     event.preventDefault();
@@ -193,6 +191,14 @@ export function dispatchPlainKey(event: KeyboardEvent, key: string, cb: HotkeyCa
     }
   }
 
+  // Only with a sound clip selected, so bare G still reaches the canvas grid toggle otherwise.
+  if (key === STUDIO_PLAIN_KEYS.audioGain && !event.shiftKey && !event.altKey) {
+    if (!cb.readOnlyPreview && openAudioGainDialog()) {
+      event.preventDefault();
+      return;
+    }
+  }
+
   if (key === "b" && !event.shiftKey && !event.altKey) {
     event.preventDefault();
     const { activeTool, setActiveTool } = usePlayerStore.getState();
@@ -203,6 +209,14 @@ export function dispatchPlainKey(event: KeyboardEvent, key: string, cb: HotkeyCa
   if (key === "v" && !event.shiftKey && !event.altKey) {
     event.preventDefault();
     usePlayerStore.getState().setActiveTool("select");
+    return;
+  }
+
+  if ((key === "[" || key === "]") && !event.shiftKey && !event.altKey) {
+    event.preventDefault();
+    const store = usePlayerStore.getState();
+    if (key === "[") store.selectLeftward();
+    else store.selectRightward();
     return;
   }
 
@@ -274,7 +288,12 @@ export function dispatchPlainKey(event: KeyboardEvent, key: string, cb: HotkeyCa
     return;
   }
 
-  if (event.key === "r" && !event.shiftKey && !event.altKey && cb.onToggleRecording) {
+  if (
+    event.key === STUDIO_PLAIN_KEYS.record &&
+    !event.shiftKey &&
+    !event.altKey &&
+    cb.onToggleRecording
+  ) {
     event.preventDefault();
     cb.onToggleRecording();
   }

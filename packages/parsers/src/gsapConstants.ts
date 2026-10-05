@@ -5,6 +5,10 @@
  * without pulling in gsapParser (which depends on recast / @babel/parser).
  */
 
+import type { GsapAnimation } from "./gsapSerialize.js";
+
+export const GSAP_DEFAULT_DURATION = 0.5;
+
 export const SUPPORTED_PROPS = [
   // 2D Transforms
   "x",
@@ -46,6 +50,29 @@ export const SUPPORTED_PROPS = [
   "innerText",
 ];
 
+/** Keys stored on dedicated GsapAnimation fields (not in properties/extras). */
+export const BUILTIN_VAR_KEYS: ReadonlySet<string> = new Set(["duration", "ease", "delay"]);
+export const DROPPED_VAR_KEYS: ReadonlySet<string> = new Set([
+  "onComplete",
+  "onStart",
+  "onUpdate",
+  "onRepeat",
+]);
+/** Keys that go in `extras`: non-editable GSAP config that must survive round-trips. */
+export const EXTRAS_KEYS: ReadonlySet<string> = new Set([
+  "stagger",
+  "yoyo",
+  "repeat",
+  "repeatDelay",
+  "snap",
+  "overwrite",
+  "immediateRender",
+]);
+
+export function isTweenConfigKey(key: string): boolean {
+  return BUILTIN_VAR_KEYS.has(key) || DROPPED_VAR_KEYS.has(key) || EXTRAS_KEYS.has(key);
+}
+
 // ── Property Groups ─────────────────────────────────────────────────────────
 // Each group maps to an independent GSAP tween so editing one property
 // (e.g. drag → x/y) never contaminates another (e.g. scale, rotation).
@@ -69,6 +96,24 @@ for (const [group, props] of Object.entries(PROPERTY_GROUPS) as [
   for (const p of props) PROP_TO_GROUP.set(p, group);
 }
 
+type PositionWrite = Pick<
+  GsapAnimation,
+  "propertyGroup" | "properties" | "fromProperties" | "keyframes"
+>;
+
+function writesProperty(animation: PositionWrite, property: string): boolean {
+  return (
+    property in animation.properties ||
+    (!!animation.fromProperties && property in animation.fromProperties) ||
+    !!animation.keyframes?.keyframes.some((k) => property in k.properties)
+  );
+}
+
+/** A position write that sets x or y. An xPercent/yPercent centring set never duplicates one. */
+export function isXYPositionWrite(a: PositionWrite): boolean {
+  return a.propertyGroup === "position" && (writesProperty(a, "x") || writesProperty(a, "y"));
+}
+
 export function classifyPropertyGroup(prop: string): PropertyGroupName {
   return PROP_TO_GROUP.get(prop) ?? "other";
 }
@@ -87,6 +132,44 @@ export function classifyTweenPropertyGroup(
   }
   if (groups.size === 1) return groups.values().next().value;
   return undefined;
+}
+
+function knownStart(animation: GsapAnimation): number | undefined {
+  if (animation.resolvedStart !== undefined) return animation.resolvedStart;
+  return typeof animation.position === "number" ? animation.position : undefined;
+}
+
+/**
+ * What a Studio hold pins from t=0 before a later keyframed tween: its 0% keyframe's position props,
+ * minus those an earlier timeline tween on the target writes (a global `gsap.set` is a base value).
+ */
+export function positionHoldForAnimation(
+  animation: GsapAnimation,
+  animations: readonly GsapAnimation[],
+): Record<string, number> | null {
+  if (!animation.keyframes) return null;
+  const start = knownStart(animation) ?? 0;
+  if (!(start > 0.001)) return null;
+  const atStart = animation.keyframes.keyframes.find((keyframe) => keyframe.percentage === 0);
+  if (!atStart) return null;
+  // A tween whose start the parser could not resolve (a label, say) is not known to come first.
+  const earlier = animations.filter((other) => {
+    const otherStart = knownStart(other);
+    return (
+      other !== animation &&
+      !other.global &&
+      other.targetSelector === animation.targetSelector &&
+      otherStart !== undefined &&
+      otherStart < start - 0.001
+    );
+  });
+  const position: Record<string, number> = {};
+  for (const [property, value] of Object.entries(atStart.properties)) {
+    if (classifyPropertyGroup(property) !== "position" || typeof value !== "number") continue;
+    if (earlier.some((other) => writesProperty(other, property))) continue;
+    position[property] = value;
+  }
+  return Object.keys(position).length > 0 ? position : null;
 }
 
 export const SUPPORTED_EASES = [

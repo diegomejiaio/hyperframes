@@ -104,8 +104,10 @@ export interface UseDomEditWiringParams {
     animId: string,
     resolvedFromValues?: Record<string, number | string>,
   ) => Promise<void>;
-  removeAllKeyframes: (sel: DomEditSelection, animId: string) => Promise<void>;
-  handleDomManualEditsReset: (sel: DomEditSelection) => Promise<void>;
+  removeAllKeyframes: Parameters<typeof useGsapSelectionHandlers>[0]["removeAllKeyframes"];
+  handleDomManualEditsReset: (
+    sel: DomEditSelection,
+  ) => Promise<void | import("./domEditCommitTypes").DomEditPersistOutcome>;
 }
 
 // fallow-ignore-next-line complexity
@@ -207,9 +209,7 @@ export function useDomEditWiring(params: UseDomEditWiringParams) {
   } = useGsapAnimationsForElement(
     projectId ?? null,
     gsapSourceFile,
-    domEditSelection
-      ? { id: domEditSelection.id ?? null, selector: domEditSelection.selector ?? null }
-      : null,
+    domEditSelection,
     gsapCacheVersion,
     // Pass the preview iframe so class/selector tweens (e.g. `.dot`) resolve to
     // the live element and surface in the inspector — not just by #id match.

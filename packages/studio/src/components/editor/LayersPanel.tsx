@@ -1,8 +1,10 @@
 import { useLivePreviewIframe } from "../../player/store/previewIframeStore";
+import { onPreviewContentReplaced } from "../../player/sceneSwap";
 import { memo, useState, useCallback, useEffect, useRef } from "react";
 import {
   collectDomEditLayerItems,
   getDomEditLayerKey,
+  liveLayerElement,
   resolveDomEditSelection,
   type DomEditLayerItem,
 } from "./domEditing";
@@ -163,8 +165,7 @@ export const LayersPanel = memo(function LayersPanel() {
       prevDocVersionRef.current += 1;
       collectLayers();
     };
-    iframe.addEventListener("load", handleLoad);
-    return () => iframe.removeEventListener("load", handleLoad);
+    return onPreviewContentReplaced(iframe, handleLoad);
   }, [previewIframeRef, livePreviewIframe, collectLayers]);
 
   useEffect(() => {
@@ -190,20 +191,8 @@ export const LayersPanel = memo(function LayersPanel() {
 
   const resolveSelection = useCallback(
     (layer: DomEditLayerItem) => {
-      // Re-find the element from the live DOM — layer.element may be stale
-      // after soft reload (which replaces scripts without reloading the iframe).
-      let el = layer.element;
-      if (!el.isConnected) {
-        const iframe = previewIframeRef.current;
-        const doc = iframe?.contentDocument;
-        if (doc) {
-          const found =
-            (layer.id ? doc.getElementById(layer.id) : null) ??
-            (layer.hfId ? doc.querySelector(`[data-hf-id="${CSS.escape(layer.hfId)}"]`) : null) ??
-            doc.getElementById(layer.key);
-          if (found instanceof HTMLElement) el = found;
-        }
-      }
+      const doc = previewIframeRef.current?.contentDocument;
+      const el = liveLayerElement(layer, doc, activeCompPath);
       return resolveDomEditSelection(el, {
         activeCompositionPath: activeCompPath,
         isMasterView,
@@ -354,7 +343,7 @@ export const LayersPanel = memo(function LayersPanel() {
 
       // ONE undo entry for the whole gesture: the z persist and the timeline
       // lane mirror below share this per-gesture-unique key (same contract as
-      // the canvas menu's wiring in PreviewOverlays).
+      // the canvas menu's wiring in ConnectedDomEditOverlay).
       const coalesceKey = zReorderCoalesceKey(entries, "layer-drag");
       const desiredOrderKeys = desiredBottomToTop.map(
         (l) =>
@@ -469,7 +458,7 @@ export const LayersPanel = memo(function LayersPanel() {
                 isDragged
                   ? "opacity-40"
                   : selected
-                    ? "bg-panel-accent/14 text-panel-accent"
+                    ? "bg-panel-accent/14 text-accent-ink"
                     : "text-panel-text-2 hover:bg-panel-hover/40 hover:text-panel-text-1"
               } ${dragKey ? "cursor-grabbing" : "cursor-pointer"}`}
               style={{ paddingLeft: 8 + layer.depth * 16 }}
@@ -505,9 +494,9 @@ export const LayersPanel = memo(function LayersPanel() {
               <span
                 className={`flex h-5 w-5 shrink-0 items-center justify-center rounded text-[8px] font-bold uppercase ${
                   selected
-                    ? "bg-panel-accent/18 text-panel-accent"
+                    ? "bg-panel-accent/18 text-accent-ink"
                     : isCompHost
-                      ? "bg-panel-accent/40 text-panel-accent"
+                      ? "bg-on text-accent-ink"
                       : "bg-panel-hover text-panel-text-4"
                 }`}
               >

@@ -1,11 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import {
   collectSubCompositionSrcs,
   isUnresolvedAssetPlaceholder,
+  isWithinProjectRoot,
   maskNonScannableRanges,
+  readProjectFile,
   resolveProjectRelativeSrc,
 } from "./assetResolution.js";
 
@@ -217,5 +220,84 @@ describe("resolveProjectRelativeSrc — the one src resolver for lint and render
     for (const src of ["assets/foo.mp4?v=2", "assets/foo.mp4#t=5", " assets/foo.mp4 "]) {
       expect(resolveProjectRelativeSrc(src, projectDir)).toBe(join(projectDir, "assets/foo.mp4"));
     }
+  });
+});
+
+// A CI runner is one OS. Injecting path.win32/path.posix exercises both
+// platforms' separator and drive-letter rules from here, so a regression in
+// either fails this suite regardless of which OS actually runs it.
+describe("isWithinProjectRoot", () => {
+  it("rejects a backslash traversal under path.win32", () => {
+    const root = "C:\\project";
+    const candidate = win32.join(root, "..\\secret.txt");
+    expect(isWithinProjectRoot(root, candidate, win32)).toBe(false);
+  });
+
+  it("rejects a mixed backslash/forward-slash traversal under path.win32", () => {
+    const root = "C:\\project";
+    const candidate = win32.join(root, "..\\../secret.txt");
+    expect(isWithinProjectRoot(root, candidate, win32)).toBe(false);
+  });
+
+  it("rejects a drive-letter path outside the root under path.win32", () => {
+    const root = "C:\\project";
+    const candidate = "D:\\secret.txt";
+    expect(isWithinProjectRoot(root, candidate, win32)).toBe(false);
+  });
+
+  it("allows a nested asset under path.win32", () => {
+    const root = "C:\\project";
+    const candidate = win32.join(root, "assets\\a.png");
+    expect(isWithinProjectRoot(root, candidate, win32)).toBe(true);
+  });
+
+  it("rejects a forward-slash traversal under path.posix", () => {
+    const root = "/project";
+    const candidate = posix.join(root, "../secret.txt");
+    expect(isWithinProjectRoot(root, candidate, posix)).toBe(false);
+  });
+
+  it("allows a nested asset under path.posix", () => {
+    const root = "/project";
+    const candidate = posix.join(root, "assets/a.png");
+    expect(isWithinProjectRoot(root, candidate, posix)).toBe(true);
+  });
+
+  it("allows the root itself", () => {
+    expect(isWithinProjectRoot("/project", "/project", posix)).toBe(true);
+  });
+});
+
+describe("readProjectFile", () => {
+  let dir: string;
+  beforeAll(() => {
+    dir = mkdtempSync(join(tmpdir(), "hf-read-project-file-"));
+    writeFileSync(join(dir, "scene.html"), "<div></div>");
+    mkdirSync(join(dir, "intro"));
+  });
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it("reads a file's text", () => {
+    expect(readProjectFile(join(dir, "scene.html"))).toEqual({ kind: "file", text: "<div></div>" });
+  });
+
+  it("names a folder instead of throwing EISDIR", () => {
+    expect(readProjectFile(join(dir, "intro"))).toEqual({ kind: "folder" });
+  });
+
+  it("reports a missing path, including one under a file", () => {
+    expect(readProjectFile(join(dir, "gone.html"))).toEqual({ kind: "missing" });
+    expect(readProjectFile(join(dir, "scene.html", "inner.html"))).toEqual({ kind: "missing" });
+  });
+
+  it("reports a name too long or a symlink loop as missing, as existsSync did", () => {
+    expect(readProjectFile(join(dir, `${"a".repeat(300)}.html`))).toEqual({ kind: "missing" });
+    symlinkSync(join(dir, "loop.html"), join(dir, "loop.html"));
+    expect(readProjectFile(join(dir, "loop.html"))).toEqual({ kind: "missing" });
+  });
+
+  it.skipIf(process.platform === "win32")("reports a named pipe without blocking on it", () => {
+    execFileSync("mkfifo", [join(dir, "pipe.html")]);
+    expect(readProjectFile(join(dir, "pipe.html"))).toEqual({ kind: "folder" });
   });
 });

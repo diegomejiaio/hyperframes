@@ -52,8 +52,8 @@ export const popupSurface = cn(
   "data-[preview-state=open]:opacity-100 data-[preview-state=open]:scale-100",
 );
 
-/** The popup's own layer: menus sit above panel chrome and below a modal. */
-const POPUP_LAYER = "z-200";
+/** Every floating list, menu, popover and tooltip sits on this layer, above panel chrome and modals. */
+export const POPUP_LAYER = "z-200";
 
 const menuPopup = cn(popupSurface, "min-w-36 p-1 shadow-menu");
 
@@ -67,7 +67,9 @@ const itemBase = cn(
   "data-[disabled]:pointer-events-none data-[disabled]:opacity-40",
 );
 
-const itemDanger = cn("text-danger data-[highlighted]:bg-danger/15 data-[highlighted]:text-danger");
+const itemDanger = cn(
+  "text-danger-ink data-[highlighted]:bg-danger/15 data-[highlighted]:text-danger-ink",
+);
 
 export type MenuItemTone = "default" | "danger";
 
@@ -217,6 +219,22 @@ export function MenuRadioItem({ className, children, ...props }: MenuRadioItemPr
         <BaseMenu.RadioItemIndicator className="size-1.5 rounded-full bg-accent" />
       </span>
     </BaseMenu.RadioItem>
+  );
+}
+
+/** An on/off row; the tick renders only while `checked`. */
+export function MenuCheckboxItem({
+  className,
+  children,
+  ...props
+}: StyledProps<typeof BaseMenu.CheckboxItem>) {
+  return (
+    <BaseMenu.CheckboxItem className={cn(itemBase, className)} {...props}>
+      <span className="truncate">{children}</span>
+      <span className="flex size-3 shrink-0 items-center justify-center text-accent-ink">
+        <BaseMenu.CheckboxItemIndicator>✓</BaseMenu.CheckboxItemIndicator>
+      </span>
+    </BaseMenu.CheckboxItem>
   );
 }
 

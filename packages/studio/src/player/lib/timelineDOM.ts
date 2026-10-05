@@ -12,6 +12,8 @@ import type { TimelineElement } from "../store/playerStore";
 import type { ClipManifestClip, IframeWindow, TimelineLike } from "./playbackTypes";
 import { resolveCssStackingContextId } from "@hyperframes/core/runtime/stacking-context";
 import { readClipTiming } from "@hyperframes/core/composition-contract";
+import { linkScopeOf } from "@hyperframes/core/media-link";
+import { createRuntimeStartTimeResolver } from "@hyperframes/core/runtime/start-resolver";
 import { groupInfoFor } from "./timelineGroupInfo";
 import { transitionLabelsForDocument } from "./timelineTransitionMetadata";
 import {
@@ -149,6 +151,12 @@ export function createTimelineElementFromManifestClip(params: {
     if (hostEl.hasAttribute("data-hidden")) entry.hidden = true;
     const timelineRole = hostEl.getAttribute("data-timeline-role");
     if (timelineRole) entry.timelineRole = timelineRole;
+    const link = hostEl.getAttribute("data-link");
+    if (link) entry.link = link;
+    const compositionScope = linkScopeOf(hostEl)?.getAttribute("data-composition-id");
+    if (compositionScope) entry.compositionScope = compositionScope;
+    const syncOrigin = hostEl.getAttribute("data-sync-origin");
+    if (syncOrigin) entry.syncOrigin = syncOrigin;
     const audioGroup = hostEl.getAttribute("data-audio-group");
     if (audioGroup) {
       entry.audioGroup = audioGroup;
@@ -171,8 +179,10 @@ export function createTimelineElementFromManifestClip(params: {
     entry.playbackRate ??= 1;
     let resolvedSrc = clip.compositionSrc;
     if (!resolvedSrc) {
-      hostEl =
-        doc?.querySelector(`[data-composition-id="${CSS.escape(clip.compositionId)}"]`) ?? hostEl;
+      if (hostEl?.getAttribute("data-composition-id") !== clip.compositionId) {
+        hostEl =
+          doc?.querySelector(`[data-composition-id="${CSS.escape(clip.compositionId)}"]`) ?? hostEl;
+      }
       resolvedSrc =
         hostEl?.getAttribute("data-composition-src") ??
         hostEl?.getAttribute("data-composition-file") ??
@@ -226,10 +236,13 @@ export function parseTimelineFromDOM(
   const nodes = doc.querySelectorAll("[data-start]");
   const els: TimelineElement[] = [];
   let trackCounter = 0;
-  const transitionLabels = transitionLabelsForDocument(
-    doc,
-    timelines ?? (doc.defaultView as IframeWindow | null)?.__timelines,
-  );
+  const timelineRegistry = timelines ?? (doc.defaultView as IframeWindow | null)?.__timelines;
+  const transitionLabels = transitionLabelsForDocument(doc, timelineRegistry);
+  const masterStart = createRuntimeStartTimeResolver({
+    timelineRegistry,
+    includeAuthoredTimingAttrs: true,
+    documentRef: doc,
+  });
 
   // fallow-ignore-next-line complexity
   nodes.forEach((node) => {
@@ -237,11 +250,14 @@ export function parseTimelineFromDOM(
     if (isTimelineIgnoredElement(node)) return;
     const el = node as HTMLElement;
     const timing = readClipTiming(el);
-    const start = timing.start;
-    if (start == null) return;
+    if (timing.start == null) return;
+    const tagLower = el.tagName.toLowerCase();
+    const start =
+      tagLower === "video" || tagLower === "audio"
+        ? masterStart.resolveMediaStartForElement(el)
+        : masterStart.resolveStartForElement(el);
     if (Number.isFinite(rootDuration) && rootDuration > 0 && start >= rootDuration) return;
 
-    const tagLower = el.tagName.toLowerCase();
     let dur = timing.duration ?? 0;
     if (dur <= 0) dur = Math.max(0, rootDuration - start);
     if (Number.isFinite(rootDuration) && rootDuration > 0) {
@@ -256,7 +272,7 @@ export function parseTimelineFromDOM(
     const sourceFile = getTimelineElementSourceFile(el);
     const selectorIndex = getTimelineElementSelectorIndex(doc, el, selector);
     const label = getTimelineElementDisplayLabel({
-      id: el.id || compId || null,
+      id: el.id || el.getAttribute("data-hf-original-composition-id") || compId || null,
       label: el.getAttribute("data-timeline-label") ?? el.getAttribute("data-label"),
       tag: tagLower,
     });
@@ -285,6 +301,8 @@ export function parseTimelineFromDOM(
               : "element",
       tag: tagLower,
       start,
+      parentCompositionStart: masterStart.resolveHostStartForElement(el),
+      ...(masterStart.isRootGlobalMediaStartForElement(el) && { authoredStartIsMasterTime: true }),
       duration: dur,
       track,
       domId: el.id || undefined,
@@ -302,8 +320,6 @@ export function parseTimelineFromDOM(
       if (mediaEl.tagName === "IMG") {
         entry.tag = "img";
       }
-      const vol = el.getAttribute("data-volume") ?? mediaEl.getAttribute("data-volume");
-      if (vol) entry.volume = parseFloat(vol);
       // Override AFTER the helper (which sets the raw relative attribute) so the
       // resolved absolute URL wins — the Studio can then fetch the asset
       // regardless of whether the attribute value was relative or absolute.
@@ -328,6 +344,12 @@ export function parseTimelineFromDOM(
 
     const timelineRole = el.getAttribute("data-timeline-role");
     if (timelineRole) entry.timelineRole = timelineRole;
+    const domLink = el.getAttribute("data-link");
+    if (domLink) entry.link = domLink;
+    const domCompositionScope = linkScopeOf(el)?.getAttribute("data-composition-id");
+    if (domCompositionScope) entry.compositionScope = domCompositionScope;
+    const domSyncOrigin = el.getAttribute("data-sync-origin");
+    if (domSyncOrigin) entry.syncOrigin = domSyncOrigin;
 
     const domAudioGroup = el.getAttribute("data-audio-group");
     if (domAudioGroup) {
@@ -346,11 +368,11 @@ export function parseTimelineFromDOM(
     if (compSrc) {
       entry.compositionSrc = compSrc;
     } else if (compId && compId !== rootComp?.getAttribute("data-composition-id")) {
-      // Inline composition — expose inner video for thumbnails
-      const innerVideo = el.querySelector("video[src]");
-      if (innerVideo) {
-        entry.src = innerVideo.getAttribute("src") || undefined;
-        entry.tag = "video";
+      // Inline composition — expose inner video or image for thumbnails
+      const innerMedia = el.querySelector("video[src], img[src]");
+      if (innerMedia) {
+        entry.src = innerMedia.getAttribute("src") || undefined;
+        entry.tag = innerMedia.tagName === "IMG" ? "img" : "video";
       }
     }
     if (entry.kind === "composition") {
@@ -373,6 +395,7 @@ export function mergeTimelineElementsPreservingDowngrades(
   nextElements: TimelineElement[],
   currentDuration: number,
   nextDuration: number,
+  stillInPreview: (element: TimelineElement) => boolean = () => true,
 ): TimelineElement[] {
   const safeCurrentDuration = Number.isFinite(currentDuration) ? currentDuration : 0;
   const safeNextDuration = Number.isFinite(nextDuration) ? nextDuration : 0;
@@ -394,7 +417,8 @@ export function mergeTimelineElementsPreservingDowngrades(
       // re-adds. A TOP-LEVEL element missing from the fresh scan was genuinely
       // removed (undo of a split, a delete), so let it go — otherwise undoing a
       // split leaves a ghost clip in the timeline even though the file is reverted.
-      element.compositionSrc != null,
+      element.compositionSrc != null &&
+      stillInPreview(element),
   );
   if (preserved.length === 0) return nextElements;
   return [...nextElements, ...preserved];

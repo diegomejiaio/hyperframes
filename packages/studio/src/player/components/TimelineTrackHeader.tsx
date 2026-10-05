@@ -12,6 +12,7 @@ import { useTimelineEditContextOptional } from "../../contexts/TimelineEditConte
 import { useDomEditActionsContextOptional } from "../../contexts/DomEditContext";
 import { mintGroupId } from "../../components/editor/useFxCarveGrouping";
 import { runtimeAudioId } from "../lib/timelineElementHelpers";
+import { isAudioOnlyTrack } from "../../utils/timelineInspector";
 import { TimelineFxButton } from "./TimelineFxButton";
 import { getTimelinePropertyLanes } from "./TimelinePropertyLanes";
 import { elementFxChain, groupAutomationLanes, isCarveLane } from "./automationLaneData";
@@ -72,6 +73,7 @@ interface TimelineTrackHeaderProps {
   isGroupMember?: boolean;
   rovingTargetId?: string | null;
   theme: TimelineTheme;
+  showAudioEffects?: boolean;
   onToggleClipExpanded: () => void;
   onToggleTrackHidden: TimelineEditCallbacks["onToggleTrackHidden"];
   onTogglePropertyGroupKeyframe?: TimelineEditCallbacks["onTogglePropertyGroupKeyframe"];
@@ -98,6 +100,7 @@ export function TimelineTrackHeader({
   isAudioTrack,
   isGroupMember = false,
   theme,
+  showAudioEffects = true,
   onToggleClipExpanded,
   onToggleTrackHidden,
   onTogglePropertyGroupKeyframe,
@@ -201,6 +204,7 @@ export function TimelineTrackHeader({
   // disclosability swapped it for the keyframe-layer row (a `◇`, no indent) the
   // moment an envelope appeared.
   const isKeyframeLayer = !!keyframeClip && disclosable && !isAudioTrack;
+  const isAudioOnly = isAudioOnlyTrack(trackElements);
   // What the lane disclosure calls this row. A row of several clips is named
   // for the TRACK, not for whichever is selected — the lanes are the track's,
   // shared per property, so "Narration 2 lanes" read as if they were that one
@@ -214,21 +218,32 @@ export function TimelineTrackHeader({
   // track holding several ungrouped ones has no single chain — the design
   // doc refuses to build "N clips = N chains", so that case gets a pointer
   // at grouping (B6's normative rule) instead of a popover.
-  const { onGroupClips, onSetElementAttributeLive, onSetElementAttributeQuiet } =
-    useTimelineEditContextOptional();
+  const {
+    onGroupClips,
+    onSetElementAttributeLive,
+    onSetElementAttributeQuiet,
+    onRevertElementAttributeLive,
+  } = useTimelineEditContextOptional();
   const domEditActions = useDomEditActionsContextOptional();
   const singleAudioClip =
     isAudioTrack && clipCount === 1 && trackElements.length > 0 ? trackElements[0] : null;
   const isTrackGrouped = trackElements.some((el) => el.audioGroup);
-  // A video track carries sound the render mixes but preview never routes
-  // through Web Audio, which is why §1.4 keeps groups audio-only. It still
-  // needs to be TOLD that, so it earns the button and a refusal.
-  const isVideoWithAudioTrack =
-    !isAudioTrack && trackElements.some((el) => el.tag.toLowerCase() === "video");
-  const writeClipFxChain = (clip: TimelineElement, next: HfAudioFxChain, live: boolean) => {
+  const audioBearingClips = isAudioTrack
+    ? trackElements
+    : trackElements.filter((el) => el.hasAudio === true);
+  const writeClipFxChain = (
+    clip: TimelineElement,
+    next: HfAudioFxChain,
+    live: boolean,
+    ended = false,
+  ) => {
     const value = next.nodes.length ? serializeAudioFxChain(next) : null;
-    if (live) onSetElementAttributeLive?.(clip, HF_AUDIO_FX_ATTR, value);
-    else void onSetElementAttributeQuiet?.(clip, HF_AUDIO_FX_ATTR, value, "Apply preset");
+    if (!live) {
+      void onSetElementAttributeQuiet?.(clip, HF_AUDIO_FX_ATTR, value, "Apply preset");
+      return;
+    }
+    onSetElementAttributeLive?.(clip, HF_AUDIO_FX_ATTR, value);
+    if (ended) onRevertElementAttributeLive?.(clip, HF_AUDIO_FX_ATTR);
   };
   const openClipFxRack = (clip: TimelineElement) => {
     void domEditActions?.handleTimelineElementSelect(clip);
@@ -241,7 +256,7 @@ export function TimelineTrackHeader({
   // UI showed the track as grouped. The button is withheld instead of acting on
   // a subset, which is also why the carve path's loud guard cannot catch this:
   // the unresolvable ids were filtered out before the call.
-  const groupableClipIds = trackElements.map(runtimeAudioId);
+  const groupableClipIds = audioBearingClips.map(runtimeAudioId);
   const allGroupableClipIds = groupableClipIds.every((id): id is string => id !== null)
     ? groupableClipIds
     : null;
@@ -299,17 +314,20 @@ export function TimelineTrackHeader({
               showTrackLabel={showTrackLabel}
               isTrackHidden={isTrackHidden}
               isAudioTrack={isAudioTrack}
+              isAudioOnly={isAudioOnly}
               onToggleTrackHidden={onToggleTrackHidden}
               // On the control line rather than a third row of its own.
               trailing={
                 <>
-                  {singleAudioClip && (
+                  {showAudioEffects && singleAudioClip && (
                     <TimelineFxButton
                       variant="chain"
                       fxChainRaw={singleAudioClip.fxChain}
                       trackKind={classifyAudioName(singleAudioClip.id, singleAudioClip.src)}
                       onChainChange={(next) => writeClipFxChain(singleAudioClip, next, false)}
-                      onChainPreview={(next) => writeClipFxChain(singleAudioClip, next, true)}
+                      onChainPreview={(next, ended) =>
+                        writeClipFxChain(singleAudioClip, next, true, ended)
+                      }
                       // Muted, an audition is silent — so the hover lifts the mute on
                       // the running graph and puts it back on the way out, the same
                       // borrow-and-return it already does with the playhead.
@@ -325,24 +343,14 @@ export function TimelineTrackHeader({
                       onOpenRack={() => openClipFxRack(singleAudioClip)}
                     />
                   )}
-                  {clipCount > 1 &&
-                    !isTrackGrouped &&
-                    (isAudioTrack ? canGroupWholeTrack : isVideoWithAudioTrack) && (
-                      <TimelineFxButton
-                        variant="group-pointer"
-                        clipCount={trackElements.length}
-                        defaultLabel={trackLabel}
-                        // Groups are audio-only in v1 (§1.4). A video track showing no
-                        // button at all is the silent limit §5 forbids, so it gets the
-                        // button and a reason instead.
-                        refusal={
-                          isAudioTrack
-                            ? undefined
-                            : "Video audio can't be grouped yet — only audio clips can join a group."
-                        }
-                        onGroupClips={groupUngroupedClips}
-                      />
-                    )}
+                  {showAudioEffects && clipCount > 1 && !isTrackGrouped && canGroupWholeTrack && (
+                    <TimelineFxButton
+                      variant="group-pointer"
+                      clipCount={audioBearingClips.length}
+                      defaultLabel={trackLabel}
+                      onGroupClips={groupUngroupedClips}
+                    />
+                  )}
                   {/* The lane disclosure, on the row's own layout rather than by
                     swapping it for a keyframe-layer row. */}
                   {disclosable && (
@@ -378,8 +386,7 @@ export function TimelineTrackHeader({
               hidden={isTrackHidden}
               trackNumber={trackNumber}
               trackDisplayNumber={trackDisplayNumber}
-              // Audio: only while hidden — see the plain header.
-              visible={!isAudioTrack || isTrackHidden}
+              asMute={isAudioOnly}
               onToggle={onToggleTrackHidden}
             />
           </LayerDisclosureRow>
@@ -440,7 +447,7 @@ export function TimelineTrackHeader({
               // element, so a shared row's other envelopes belong to clips it is
               // not showing and there would be nothing to reveal.
               onReveal={
-                revealTarget && revealElementId && keyframeClip
+                showAudioEffects && revealTarget && revealElementId && keyframeClip
                   ? () => {
                       // Select FIRST: the rack is the property panel's view of
                       // the selected element, so a reveal aimed at an unselected

@@ -1,3 +1,4 @@
+import { spansOverlap } from "@hyperframes/core/clip-facts";
 import type { TimelineElement } from "../store/playerStore";
 import { isAudioTimelineElement } from "../../utils/timelineInspector";
 import { isTransitionPair } from "./timelineTransitionSeams";
@@ -16,19 +17,16 @@ export function classifyZone(el: TimelineElement): TrackZone {
 }
 
 /** The "main track" is a convention, not a schema field: the first
- *  visual-zone display lane, matched only when it actually holds a visual
- *  clip and isn't an inline-expanded sub-composition child. */
+ *  visual-zone display lane, matched only when it actually holds a visual clip. */
 export function isMainTrackElement(el: TimelineElement): boolean {
-  return el.track === 0 && classifyZone(el) === "visual" && el.expandedParentStart == null;
+  return el.track === 0 && classifyZone(el) === "visual";
 }
 
 const keyOf = (el: TimelineElement) => el.key ?? el.id;
 
-const EPS = 1e-6;
-
 /** Two clips overlap when their half-open [start, end) intervals intersect. */
 function overlaps(a: TimelineElement, b: TimelineElement): boolean {
-  return a.start < b.start + b.duration - EPS && b.start < a.start + a.duration - EPS;
+  return spansOverlap(a.start, a.start + a.duration, b.start, b.start + b.duration);
 }
 
 /** Deterministic order on the stable clip id (never the mutated lane/track). */

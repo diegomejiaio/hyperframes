@@ -8,8 +8,8 @@
  */
 
 import type { Browser, Page } from "puppeteer-core";
-import { mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { writeCaptureFileSync } from "./captureFile.js";
+import { readdirSync, readFileSync, statSync } from "node:fs";
+import { ensureCaptureDirSync, writeCaptureFileSync } from "./captureFile.js";
 import { join, extname } from "node:path";
 import { isPrivateUrl, safeFetch } from "./assetDownloader.js";
 import { CAPTURE_USER_AGENT } from "./userAgent.js";
@@ -50,8 +50,10 @@ function liveRemainingMs(budget: RemainingBudget, fallbackMs: number): number {
 export async function saveLottieAnimations(
   discoveredLotties: DiscoveredLottie[],
   lottieDir: string,
+  outputDir: string,
   budget: RemainingBudget = {},
 ): Promise<number> {
+  ensureCaptureDirSync(outputDir, lottieDir);
   const byteBudget = budget.byteBudget ?? createCaptureDownloadBudget();
   let savedCount = 0;
   const savedHashes = new Set<string>(); // Deduplicate by content
@@ -130,7 +132,7 @@ export async function renderLottiePreviews(
     layers: number;
   }> = [];
   const previewDir = join(lottieDir, "previews");
-  mkdirSync(previewDir, { recursive: true });
+  ensureCaptureDirSync(outputDir, previewDir);
 
   for (const file of readdirSync(lottieDir)) {
     if (!file.endsWith(".json")) continue;
@@ -187,11 +189,8 @@ export async function renderLottiePreviews(
           .waitForFunction(() => (window as any).__READY === true, { timeout: 5000 })
           .catch(() => {});
         if (liveRemainingMs(budget, 1) > 0) {
-          await previewPage.screenshot({
-            path: join(previewDir, previewName),
-            type: "png",
-            omitBackground: true,
-          });
+          const shot = await previewPage.screenshot({ type: "png", omitBackground: true });
+          writeCaptureFileSync(join(previewDir, previewName), shot);
           preview = `assets/lottie/previews/${previewName}`;
         }
       } catch {
@@ -473,9 +472,9 @@ export async function captureVideoManifest(
   if (merged.length === 0) return;
 
   const videoManifestDir = join(outputDir, "assets", "videos");
-  mkdirSync(videoManifestDir, { recursive: true });
+  ensureCaptureDirSync(outputDir, videoManifestDir);
   const previewDir = join(videoManifestDir, "previews");
-  mkdirSync(previewDir, { recursive: true });
+  ensureCaptureDirSync(outputDir, previewDir);
 
   const videoManifest: Array<{
     index: number;
@@ -523,8 +522,8 @@ export async function captureVideoManifest(
         if (rect && rect.width >= 10) {
           await new Promise((r) => setTimeout(r, 200)); // let decoder settle
           if (liveRemainingMs(opts ?? {}, 1) > 0) {
-            await page.screenshot({
-              path: join(previewDir, previewName),
+            const shot = await page.screenshot({
+              type: "png",
               clip: {
                 x: Math.max(0, rect.x),
                 y: Math.max(0, rect.y),
@@ -532,6 +531,7 @@ export async function captureVideoManifest(
                 height: Math.min(rect.height, 1080),
               },
             });
+            writeCaptureFileSync(join(previewDir, previewName), shot);
             preview = `assets/videos/previews/${previewName}`;
           }
         }

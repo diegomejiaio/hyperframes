@@ -1,14 +1,25 @@
 import { buildProjectApiPath } from "../utils/projectRouting";
+import { resolvePreviewRelative } from "../utils/previewRelativePath";
 import { useCallback, type ReactNode } from "react";
 import { createElement } from "react";
 import { CompositionThumbnail, VideoThumbnail } from "../player";
+import {
+  compositionPathOfPreviewUrl,
+  resolveThumbnailSeekTime,
+} from "../player/components/CompositionThumbnail";
 import type { TimelineElement } from "../player";
 import type { TimelineClipRenderContext } from "../player/components/TimelineTypes";
 import { audioPillFlags } from "../player/components/audioClipLink";
-import { AudioWaveform } from "../player/components/AudioWaveform";
+import { AudioWaveform, rendersWaveform } from "../player/components/AudioWaveform";
 import { ImageThumbnail } from "../player/components/ImageThumbnail";
+import { TextClipContent } from "../player/components/TextClipContent";
+import { AudibleVideoClipContent } from "../player/components/AudibleVideoClipContent";
+import { ClipPeakMarks } from "../player/components/ClipPeakMarks";
+import { clipPeaksUrl, clipSourceWindow } from "../player/components/clipPeakMap";
+import { clipHasSound } from "../player/components/clipMenuNormalize";
 import { encodePreviewPath, resolveMediaPreviewUrl } from "../player/components/thumbnailUtils";
 import { usePlayerStore } from "../player/store/playerStore";
+import { thumbnailRevisionOf } from "../player/store/thumbnailSlice";
 import { effectiveThumbnailMode } from "../player/lib/thumbnailPolicy";
 
 export function normalizeCompositionSrc(
@@ -26,24 +37,6 @@ export function normalizeCompositionSrc(
     // already relative
   }
   return compSrc;
-}
-
-/** Resolve a media src to its project-relative preview path, or null. */
-function resolvePreviewRelative(
-  src: string | undefined,
-  pid: string,
-  origin: string,
-): string | null {
-  if (!src) return null;
-  try {
-    const parsed = new URL(src, origin);
-    const base = new URL(buildProjectApiPath(pid, `/preview/`), origin).pathname;
-    return parsed.pathname.startsWith(base)
-      ? decodeURIComponent(parsed.pathname.slice(base.length))
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 /**
@@ -72,6 +65,7 @@ function renderAudioClip(
   labelColor: string,
   context: TimelineClipRenderContext,
   elements: readonly TimelineElement[],
+  labelInset?: number,
 ): ReactNode {
   const audioUrl = resolveMediaPreviewUrl(el.src ?? "", pid, window.location.origin);
   const srcRelative = resolvePreviewRelative(audioUrl, pid, window.location.origin);
@@ -83,7 +77,7 @@ function renderAudioClip(
     ? buildProjectApiPath(pid, `/waveform/${encodedRelative}`)
     : undefined;
   const { start, end } = trimFractions(el);
-  return createElement(AudioWaveform, {
+  const waveform = createElement(AudioWaveform, {
     audioUrl,
     waveformUrl,
     label: "",
@@ -93,11 +87,30 @@ function renderAudioClip(
     projectId: pid,
     sessionEpoch,
     priority: context.priority,
+    labelInset,
     ...audioPillFlags(el, elements),
   });
+  return createElement(
+    ClipPeakMarks,
+    {
+      peaksUrl: clipPeaksUrl(el.src, pid),
+      sourceWindow: clipSourceWindow(el),
+      gain: el.volume ?? 1,
+    },
+    waveform,
+  );
 }
 
-interface UseRenderClipContentOptions {
+function withSoundStrip(
+  el: TimelineElement,
+  thumbnail: ReactNode,
+  waveform: (labelInset: number) => ReactNode,
+): ReactNode {
+  if (el.tag !== "video" || !clipHasSound(el)) return thumbnail;
+  return createElement(AudibleVideoClipContent, { thumbnail, waveform: waveform(0) });
+}
+
+export interface UseRenderClipContentOptions {
   projectIdRef: { current: string | null };
   compIdToSrc: Map<string, string>;
   activePreviewUrl: string | null;
@@ -114,7 +127,7 @@ export function useRenderClipContent({
   const thumbnailMode = usePlayerStore((s) => s.thumbnailMode);
   const effectiveMode = effectiveThumbnailMode(thumbnailMode);
   const sessionEpoch = usePlayerStore((s) => s.timelineSessionEpoch);
-  const contentRevision = usePlayerStore((s) => s.thumbnailContentRevision);
+  const thumbnailRevisions = usePlayerStore((s) => s.thumbnailRevisions);
   const elements = usePlayerStore((s) => s.elements);
   return useCallback(
     // Pre-existing clip-content dispatcher; reduced by extracting renderAudioClip.
@@ -129,10 +142,10 @@ export function useRenderClipContent({
 
       // Thumbnail generation disabled (perf) -> plain clip bars. Audio still shows
       // its waveform (cheap, not a frame thumbnail). Toggle: timeline toolbar.
+      const waveform = (labelInset?: number) =>
+        renderAudioClip(el, pid, sessionEpoch, style.label, context, elements, labelInset);
       if (effectiveMode === "hidden") {
-        return el.tag === "audio"
-          ? renderAudioClip(el, pid, sessionEpoch, style.label, context, elements)
-          : null;
+        return rendersWaveform(el) ? waveform() : withSoundStrip(el, null, waveform);
       }
 
       let compSrc = el.compositionSrc;
@@ -155,11 +168,11 @@ export function useRenderClipContent({
           label: "",
           labelColor: style.label,
 
-          seekTime: 0,
-          duration: el.duration,
+          seekTime: resolveThumbnailSeekTime(el.duration),
+          duration: 0,
           projectId: pid,
           sessionEpoch,
-          contentRevision,
+          contentRevision: thumbnailRevisionOf(thumbnailRevisions, compSrc),
           priority: context.priority,
           rich: context.rich,
         });
@@ -168,9 +181,11 @@ export function useRenderClipContent({
       // Audio clips — waveform visualization. Resolve these before the generic
       // activePreviewUrl thumbnail branch; audio rows need waveform data, not a
       // captured frame from the currently drilled composition preview.
-      if (el.tag === "audio") {
+      if (rendersWaveform(el)) {
         return renderAudioClip(el, pid, sessionEpoch, style.label, context, elements);
       }
+
+      if (el.text) return createElement(TextClipContent, { text: el.text });
 
       // When drilled into a composition, render all inner elements via
       // CompositionThumbnail at their start time — most accurate visual.
@@ -186,17 +201,16 @@ export function useRenderClipContent({
           duration: el.duration,
           projectId: pid,
           sessionEpoch,
-          contentRevision,
+          contentRevision: thumbnailRevisionOf(
+            thumbnailRevisions,
+            compositionPathOfPreviewUrl(activePreviewUrl),
+          ),
           priority: context.priority,
           rich: context.rich,
         });
       }
 
-      const htmlPreviewEligible =
-        el.duration > 0 &&
-        effectiveTimelineDuration > 0 &&
-        el.duration < effectiveTimelineDuration * 0.92 &&
-        !/(backdrop|background|overlay|scrim|mask)/i.test(el.id);
+      const htmlPreviewEligible = el.duration > 0 && effectiveTimelineDuration > 0;
 
       if ((el.tag === "video" || el.tag === "img") && el.src) {
         const mediaSrc = resolveMediaPreviewUrl(el.src, pid, window.location.origin);
@@ -214,7 +228,7 @@ export function useRenderClipContent({
             rich: context.rich,
           });
         }
-        return createElement(VideoThumbnail, {
+        const thumbnail = createElement(VideoThumbnail, {
           videoSrc: mediaSrc,
           label: "",
           labelColor: style.label,
@@ -225,6 +239,7 @@ export function useRenderClipContent({
           sessionEpoch,
           priority: context.priority,
         });
+        return withSoundStrip(el, thumbnail, waveform);
       }
 
       if (htmlPreviewEligible) {
@@ -239,7 +254,7 @@ export function useRenderClipContent({
           duration: el.duration,
           projectId: pid,
           sessionEpoch,
-          contentRevision,
+          contentRevision: thumbnailRevisionOf(thumbnailRevisions, "index.html"),
           priority: context.priority,
           rich: context.rich,
         });
@@ -254,7 +269,7 @@ export function useRenderClipContent({
       effectiveTimelineDuration,
       effectiveMode,
       sessionEpoch,
-      contentRevision,
+      thumbnailRevisions,
       elements,
     ],
   );

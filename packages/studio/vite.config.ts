@@ -9,12 +9,15 @@ import {
   lstatSync,
   realpathSync,
 } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { join, resolve } from "node:path";
 import { readNodeRequestBody } from "./vite.request-body.js";
+import { bindNodeRequestSignal } from "./vite.request-signal.js";
 import { watch } from "chokidar";
 import { createProjectSignatureCache, createViteAdapter } from "./vite.adapter";
 import { previewConfigPayload } from "./vite.preview-config";
 import { loadStudioServerDevModule } from "./vite.studio-server-module";
+import type { openProjectHistory } from "@hyperframes/studio-server";
+import { previewChangeOwner } from "./vite.preview-watch";
 
 async function loadRuntimeSourceForDev(
   server: import("vite").ViteDevServer,
@@ -101,12 +104,15 @@ function devProjectApi(): Plugin {
       // ignore them (see `server.watch.ignored`), because it answers an html
       // change with a full page reload; this one only announces the change and
       // lets Studio decide what to do with it.
-      const realProjectPaths: string[] = [];
+      const watchedProjects = new Map<string, string>();
       try {
         for (const entry of readdirSync(dataDir, { withFileTypes: true })) {
           const full = join(dataDir, entry.name);
           try {
-            realProjectPaths.push(lstatSync(full).isSymbolicLink() ? realpathSync(full) : full);
+            watchedProjects.set(
+              lstatSync(full).isSymbolicLink() ? realpathSync(full) : full,
+              entry.name,
+            );
           } catch {
             /* skip broken symlinks */
           }
@@ -115,7 +121,7 @@ function devProjectApi(): Plugin {
         /* dataDir doesn't exist yet */
       }
 
-      const projectWatcher = watch(realProjectPaths, {
+      const projectWatcher = watch([...watchedProjects.keys()], {
         ignoreInitial: true,
         // A project write is a whole-file replace; wait for it to settle so a
         // half-written composition is never announced.
@@ -145,6 +151,9 @@ function devProjectApi(): Plugin {
           expectedVersion: string,
         ) => { path: string; version: string; writeToken: string } | null;
         fileContentVersion: (content: string) => string;
+        affectsPreview: (projectDir: string, changedPath: string) => boolean;
+        DELETED_VERSION: string;
+        openProjectHistory: typeof openProjectHistory;
       } | null = null;
       const getApi = async () => {
         if (!_api) {
@@ -156,13 +165,24 @@ function devProjectApi(): Plugin {
           >;
           // The cast above is the only thing standing between a renamed export and
           // a dev server that silently reports every Studio write as external.
-          for (const name of ["identifyFileWrite", "fileContentVersion"] as const) {
+          for (const name of [
+            "identifyFileWrite",
+            "fileContentVersion",
+            "affectsPreview",
+            "openProjectHistory",
+          ] as const) {
             if (typeof mod[name] !== "function") {
               throw new Error(`@hyperframes/studio-server dev module is missing ${name}()`);
             }
           }
           _studioServerModule = mod;
-          const adapter = createViteAdapter(dataDir, server, signatureCache);
+          // The engine records its write receipts in this module, where the watcher below reads them.
+          const adapter = createViteAdapter(dataDir, server, signatureCache, {
+            openHistory: mod.openProjectHistory,
+            // Projects can be created or imported after startup. Keep the canonical
+            // id and real root before the signature cache starts watching them.
+            onResolveProject: (project) => watchedProjects.set(project.dir, project.id),
+          });
           _api = mod.createStudioApi(adapter);
         }
         return _api;
@@ -207,6 +227,7 @@ function devProjectApi(): Plugin {
       // API middleware
       server.middlewares.use(async (req, res, next) => {
         if (!req.url?.startsWith("/api/")) return next();
+        const requestSignal = bindNodeRequestSignal(res);
         try {
           const api = await getApi();
           const url = new URL(req.url, `http://${req.headers.host}`);
@@ -224,6 +245,7 @@ function devProjectApi(): Plugin {
             method: req.method,
             headers,
             body,
+            signal: requestSignal.signal,
           });
           const response = await api.fetch(fetchReq);
           await bridgeHonoResponse(response, res);
@@ -233,10 +255,14 @@ function devProjectApi(): Plugin {
             res.writeHead(500, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ error: "Internal server error" }));
           }
+        } finally {
+          requestSignal.dispose();
         }
       });
 
       projectWatcher.on("change", (filePath: string) => {
+        const owner = previewChangeOwner(watchedProjects, filePath);
+        if (!owner) return;
         if (
           !filePath.endsWith(".html") &&
           !filePath.endsWith(".css") &&
@@ -256,19 +282,22 @@ function devProjectApi(): Plugin {
         } catch {
           // A deletion has no current bytes to match a write receipt against.
         }
-        const receipt =
-          version && studioServer ? studioServer.identifyFileWrite(filePath, version) : null;
-        // First path segment under `dataDir` is the project id (`data/projects/<id>/...`).
-        // Mirrors the CLI host's `project.id` field on the same event — see its
-        // doc comment for why a stale tab needs this to ignore another
-        // project's saves on a shared connection. This host is multi-project
-        // (any dir under `dataDir` resolves), so unlike the CLI host it can't
-        // assume one fixed id.
-        const projectId = relative(dataDir, filePath).split(sep)[0];
+        const receipt = studioServer
+          ? studioServer.identifyFileWrite(filePath, version ?? studioServer.DELETED_VERSION)
+          : null;
+        // The API records what the preview loaded in this same module, so ask it here.
+        const reloads = studioServer?.affectsPreview(owner.projectDir, filePath) ?? true;
         server.ws.send({
           type: "custom",
           event: "hf:file-change",
-          data: { path: filePath, version, projectId, ...receipt },
+          data: {
+            path: filePath,
+            version,
+            projectId: owner.projectId,
+            affectsPreview: reloads,
+            ...(reloads ? {} : { affectedCompositions: [] }),
+            ...receipt,
+          },
         });
       });
       server.httpServer?.on("close", () => void projectWatcher.close());

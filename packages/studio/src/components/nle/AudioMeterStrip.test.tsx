@@ -11,6 +11,9 @@ import { useAudioMetersVisible } from "../../utils/audioMeterVisibility";
 import { SILENT_CHANNEL } from "../../utils/audioMeterMath";
 import {
   AudioMeterStrip,
+  type AudioMeterStripProps,
+  CLIP_LATCH_PEAK,
+  stepClipLatch,
   evictGoneMeterState,
   followMeterHook,
   stepAndPaintStrips,
@@ -20,8 +23,9 @@ import {
 
 const iframe = { contentWindow: null as unknown };
 const previewIframeRef = { current: iframe };
+let shell: { previewIframeRef: typeof previewIframeRef } | null = { previewIframeRef };
 vi.mock("../../contexts/StudioContext", () => ({
-  useStudioShellContext: () => ({ previewIframeRef }),
+  useStudioShellContextOptional: () => shell,
 }));
 
 const onSetAudioGroupAttributeLive = vi.fn();
@@ -88,6 +92,7 @@ const tick = () => {
 };
 
 beforeEach(() => {
+  shell = { previewIframeRef };
   frames = [];
   vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
   vi.stubGlobal("cancelAnimationFrame", () => {});
@@ -103,11 +108,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function mount() {
+function mount(props: AudioMeterStripProps = {}) {
   const host = document.createElement("div");
   document.body.append(host);
   const root = createRoot(host);
-  act(() => root.render(<AudioMeterStrip />));
+  act(() => root.render(<AudioMeterStrip {...props} />));
   roots.push(root);
   return { host, root };
 }
@@ -175,6 +180,26 @@ describe("AudioMeterStrip", () => {
     expect(second.start).toHaveBeenCalledTimes(1);
     tick();
     expect(second.read).toHaveBeenCalled();
+  });
+
+  it("reads a host's preview iframe over the shell's", () => {
+    usePlayerStore.setState({ elements: [clip({ audioGroup: "vo" })] });
+    const shellHook = makeHook();
+    setHook(shellHook);
+    const hostHook = makeHook();
+    const hostIframe = { contentWindow: { __hf: { audioMeter: hostHook } } };
+    mount({ previewIframeRef: { current: hostIframe as unknown as HTMLIFrameElement } });
+    tick();
+    expect(hostHook.start).toHaveBeenCalledTimes(1);
+    expect(shellHook.start).not.toHaveBeenCalled();
+  });
+
+  it("mounts with no shell and no preview iframe", () => {
+    shell = null;
+    usePlayerStore.setState({ elements: [clip({ audioGroup: "vo" })] });
+    const { host } = mount();
+    tick();
+    expect(host.querySelector("[data-testid=audio-meter-strip]")).not.toBeNull();
   });
 
   it("keeps authored gain 2 above unity and writes exactly 1 at the midpoint", () => {
@@ -391,5 +416,56 @@ describe("stepAndPaintStrips", () => {
     expect(loudMask.style.height).toBe("0%");
     expect(restMask.style.height).toBe("50%");
     expect(state.has("loud")).toBe(true);
+  });
+});
+
+describe("CLIP light", () => {
+  const hookAt = (peak: number) => ({
+    start: vi.fn(),
+    stop: vi.fn(),
+    read: vi.fn(() => ({ master: { l: peak, r: 0 }, groups: {} })),
+  });
+
+  it("latches at the -1 dBFS export ceiling, stays lit when the level drops, and resets on click", () => {
+    usePlayerStore.setState({ elements: [clip({})] });
+    const hook = hookAt(1);
+    setHook(hook);
+    const { host } = mount();
+    const light = host.querySelector<HTMLElement>("[data-testid=meter-clip-light]");
+    expect(light?.dataset.lit).toBe("false");
+    tick();
+    expect(light?.dataset.lit).toBe("true");
+    hook.read.mockReturnValue({ master: { l: 0.1, r: 0.1 }, groups: {} });
+    tick();
+    expect(light?.dataset.lit).toBe("true");
+    act(() => light?.click());
+    expect(light?.dataset.lit).toBe("false");
+    tick();
+    expect(light?.dataset.lit).toBe("false");
+  });
+
+  it("stays dark in the red band just under the ceiling", () => {
+    usePlayerStore.setState({ elements: [clip({})] });
+    setHook(hookAt(10 ** (-1.2 / 20)));
+    const { host } = mount();
+    tick();
+    expect(host.querySelector<HTMLElement>("[data-testid=meter-clip-light]")?.dataset.lit).toBe(
+      "false",
+    );
+  });
+});
+
+describe("stepClipLatch", () => {
+  it("lights exactly at -1 dBFS on either channel, not below", () => {
+    expect(CLIP_LATCH_PEAK).toBeCloseTo(0.891251, 6);
+    expect(stepClipLatch(false, { l: CLIP_LATCH_PEAK, r: 0 })).toBe(true);
+    expect(stepClipLatch(false, { l: 0, r: CLIP_LATCH_PEAK })).toBe(true);
+    expect(stepClipLatch(false, { l: CLIP_LATCH_PEAK - 1e-6, r: 0 })).toBe(false);
+    expect(stepClipLatch(false, undefined)).toBe(false);
+  });
+
+  it("holds once lit, whatever comes next", () => {
+    expect(stepClipLatch(true, { l: 0, r: 0 })).toBe(true);
+    expect(stepClipLatch(true, undefined)).toBe(true);
   });
 });
